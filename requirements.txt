@@ -1,0 +1,7 @@
+# how to run:
+    save files then type:
+        1.cd c:\Users\16002\Desktop\demo
+        2.python -m pip install -r requirements.txt
+        3.python main.py
+    in cmd to run
+pygame>=2.5.0
