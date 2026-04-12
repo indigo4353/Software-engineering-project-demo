@@ -18,7 +18,6 @@ TILE_GRID_LINE = (28, 32, 42)
 
 # COLORS FOR THE GAME
 
-BG = (18, 20, 28)
 UI_BG = (35, 38, 52)
 TEXT = (230, 232, 240)
 ACCENT = (180, 120, 255)
@@ -77,4 +76,3 @@ def get_font(size):
                 except OSError:
                     pass
     return pygame.font.Font(None, size)
-
