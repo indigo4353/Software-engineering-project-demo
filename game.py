@@ -1,14 +1,15 @@
 """
-游戏主程序：玩家、怪、武器、拾取、地图和界面都在这个文件里。
+This file contains the main game logic and the game objects.
 """
 import math
 import random
+from pathlib import Path
 
 import pygame
 
 import config
 
-# ---------- 小工具 ----------
+
 
 
 def dist(ax, ay, bx, by):
@@ -20,16 +21,47 @@ def circles_hit(ax, ay, ar, bx, by, br):
 
 
 def camera_xy(px, py):
-    cx = max(0, min(px - config.SCREEN_W / 2, config.WORLD_W - config.SCREEN_W))
-    cy = max(0, min(py - config.SCREEN_H / 2, config.WORLD_H - config.SCREEN_H))
+    vw, vh = config.VIEW_W, config.VIEW_H
+    cx = max(0, min(px - vw / 2, config.WORLD_W - vw))
+    cy = max(0, min(py - vh / 2, config.WORLD_H - vh))
     return int(cx), int(cy)
 
 
 def to_screen(wx, wy, cam_x, cam_y):
-    return int(wx) - cam_x, int(wy) - cam_y
+    s = config.DISPLAY_SCALE
+    return int((wx - cam_x) * s), int((wy - cam_y) * s)
 
 
-# ---------- 游戏对象 ----------
+def sr(r):
+    """World radius/length to screen pixels (scaled by DISPLAY_SCALE)."""
+    return max(1, int(r * config.DISPLAY_SCALE))
+
+
+def _load_scaled_png(folder: Path, name: str, size_px: int):
+    """Load the png file from the images folder and scale it to the square side length size_px; return None if failed."""
+    path = folder / name
+    if not path.is_file():
+        return None
+    try:
+        img = pygame.image.load(str(path)).convert_alpha()
+        s = max(4, int(size_px))
+        if img.get_size() != (s, s):
+            img = pygame.transform.scale(img, (s, s))
+        return img
+    except pygame.error:
+        return None
+
+
+def blit_rot_center(dst, image, center_xy, angle_rad, tangent_offset=0.0):
+    if image is None:
+        return
+    deg = -math.degrees(angle_rad + math.pi / 2 + tangent_offset)
+    rot = pygame.transform.rotate(image, deg)
+    r = rot.get_rect(center=center_xy)
+    dst.blit(rot, r)
+
+
+# ---------- Game Objects ----------
 
 
 class Player:
@@ -121,7 +153,7 @@ class Enemy:
 
 def spawn_enemy(px, py, wave):
     ang = random.uniform(0, 2 * math.pi)
-    d0 = max(config.SCREEN_W, config.SCREEN_H) * 0.52 + random.uniform(50, 220)
+    d0 = max(config.VIEW_W, config.VIEW_H) * 0.52 + random.uniform(50, 220)
     x = max(24, min(config.WORLD_W - 24, px + math.cos(ang) * d0))
     y = max(24, min(config.WORLD_H - 24, py + math.sin(ang) * d0))
     r = random.random()
@@ -186,7 +218,9 @@ class OrbitBlades:
         out = []
         for i in range(self.count):
             a = self.angle + (2 * math.pi * i) / max(1, self.count)
-            out.append((px + math.cos(a) * config.ORBIT_RADIUS, py + math.sin(a) * config.ORBIT_RADIUS, 10.0))
+            bx = px + math.cos(a) * config.ORBIT_RADIUS
+            by = py + math.sin(a) * config.ORBIT_RADIUS
+            out.append((bx, by, 10.0, a))
         return out
 
 
@@ -220,13 +254,13 @@ class HomingMissiles:
 
 
 UPGRADES = [
-    ("orbit_lv", "环绕飞刀 +1 等级", "伤害与转速提高"),
-    ("orbit_cnt", "环绕飞刀 +1 数量", "多一枚飞刀"),
-    ("dmg", "近战威力", "所有武器伤害 +12%"),
-    ("speed", "移速", "移动 +8%"),
-    ("hp", "体质", "最大生命 +15，并回血"),
-    ("missile", "追踪火球", "自动朝最近敌人发射"),
-    ("missile_lv", "火球强化", "火球更强更快"),
+    ("orbit_lv", "Orbit Blades +1 Level", "Damage and speed increased"),
+    ("orbit_cnt", "Orbit Blades +1 Count", "One more blade"),
+    ("dmg", "Melee Damage", "All weapons damage +12%"),
+    ("speed", "Movement Speed", "Movement +8%"),
+    ("hp", "HP Recovery", "Maximum health +15, and recover 25 HP"),
+    ("missile", "Homing Bullet", "Automatically fire at the nearest enemy"),
+    ("missile_lv", "Homing Bullet +1 Level", "Homing bullet stronger and faster"),
 ]
 
 
@@ -243,7 +277,7 @@ def update_projectiles(projectiles, enemies, dt):
                 break
 
 
-# ---------- 主逻辑 ----------
+# ---------- Main Logic ----------
 
 
 class Game:
@@ -253,32 +287,78 @@ class Game:
         pygame.display.set_caption(config.TITLE)
         self.clock = pygame.time.Clock()
         self.world_rect = pygame.Rect(0, 0, config.WORLD_W, config.WORLD_H)
-        self.font = config.get_font(18)
-        self.font_big = config.get_font(28)
-        self.font_small = config.get_font(14)
+        self.font = config.get_font(20)
+        self.font_big = config.get_font(32)
+        self.font_small = config.get_font(15)
         self.world_map = self._make_map()
+        img_dir = Path(__file__).resolve().parent / "images"
+        ds = config.DISPLAY_SCALE
+        self.tex_knight = _load_scaled_png(
+            img_dir, "knight.png", max(8, int(2 * config.PLAYER_RADIUS * ds))
+        )
+        self.tex_sword = _load_scaled_png(
+            img_dir, "sword.png", max(12, int(2 * 10 * ds))
+        )
+        self.tex_enemy = {}
+        for rad in (9, 12, 18):
+            self.tex_enemy[rad] = _load_scaled_png(
+                img_dir, "enemy.png", max(8, int(2 * rad * ds))
+            )
+        self.tex_bullet = _load_scaled_png(
+            img_dir,
+            "bullet.png",
+            max(8, int(2 * config.PROJECTILE_RADIUS * ds)),
+        )
+        self._start_bgm()
         self.reset()
 
+    def _start_bgm(self):
+        path = Path(__file__).resolve().parent / "music" / "music.mp3"
+        if not path.is_file():
+            return
+        try:
+            pygame.mixer.music.load(str(path))
+            pygame.mixer.music.set_volume(0.45)
+            pygame.mixer.music.play(-1)
+        except pygame.error:
+            pass
+
     def _make_map(self):
-        s = pygame.Surface((config.WORLD_W, config.WORLD_H))
+        map_path = Path(__file__).resolve().parent / "images" / "map.png"
+        tw, th = config.WORLD_W, config.WORLD_H
+        if map_path.is_file():
+            try:
+                img = pygame.image.load(str(map_path)).convert()
+                if img.get_size() != (tw, th):
+                    img = pygame.transform.scale(img, (tw, th))
+                sc = config.DISPLAY_SCALE
+                if sc != 1.0:
+                    img = pygame.transform.scale(img, (int(tw * sc), int(th * sc)))
+                return img
+            except pygame.error:
+                pass
+        s = pygame.Surface((tw, th))
         ts = config.TILE_SIZE
-        nx = (config.WORLD_W + ts - 1) // ts
-        ny = (config.WORLD_H + ts - 1) // ts
+        nx = (tw + ts - 1) // ts
+        ny = (th + ts - 1) // ts
         for ty in range(ny):
             for tx in range(nx):
                 wx, wy = tx * ts, ty * ts
-                w = min(ts, config.WORLD_W - wx)
-                h = min(ts, config.WORLD_H - wy)
+                w = min(ts, tw - wx)
+                h = min(ts, th - wy)
                 if w <= 0 or h <= 0:
                     continue
                 c = config.TILE_COLOR_A if (tx + ty) % 2 == 0 else config.TILE_COLOR_B
                 pygame.draw.rect(s, c, (wx, wy, w, h))
         for tx in range(0, nx + 1, 4):
-            x = min(tx * ts, config.WORLD_W)
-            pygame.draw.line(s, config.TILE_GRID_LINE, (x, 0), (x, config.WORLD_H))
+            x = min(tx * ts, tw)
+            pygame.draw.line(s, config.TILE_GRID_LINE, (x, 0), (x, th))
         for ty in range(0, ny + 1, 4):
-            y = min(ty * ts, config.WORLD_H)
-            pygame.draw.line(s, config.TILE_GRID_LINE, (0, y), (config.WORLD_W, y))
+            y = min(ty * ts, th)
+            pygame.draw.line(s, config.TILE_GRID_LINE, (0, y), (tw, y))
+        sc = config.DISPLAY_SCALE
+        if sc != 1.0:
+            s = pygame.transform.scale(s, (int(tw * sc), int(th * sc)))
         return s
 
     def reset(self):
@@ -405,7 +485,7 @@ class Game:
             if self.orbit.hit_cd.get(eid, 0) > 0:
                 continue
             dmg = self.orbit.blade_damage() * p.damage_mult
-            for bx, by, br in self.orbit.blade_positions(p.x, p.y):
+            for bx, by, br, _ang in self.orbit.blade_positions(p.x, p.y):
                 if circles_hit(bx, by, br, e.x, e.y, e.radius):
                     self.orbit.hit_cd[eid] = config.ORBIT_HIT_COOLDOWN
                     e.hit(dmg)
@@ -442,91 +522,135 @@ def draw(game):
     surf.fill(config.BG)
     p = game.player
     icx, icy = camera_xy(p.x, p.y)
-    surf.blit(game.world_map, (-icx, -icy))
+    s = config.DISPLAY_SCALE
+    surf.blit(game.world_map, (-int(icx * s), -int(icy * s)))
 
     for g in game.gems:
         sx, sy = to_screen(g.x, g.y, icx, icy)
-        pygame.draw.circle(surf, config.XP_COLOR, (sx, sy), int(g.radius))
+        pygame.draw.circle(surf, config.XP_COLOR, (sx, sy), sr(g.radius))
 
     for e in game.enemies:
         sx, sy = to_screen(e.x, e.y, icx, icy)
-        if e.kind == "grunt":
-            col = (200, 90, 90)
-        elif e.kind == "runner":
-            col = (230, 160, 80)
+        ri = int(round(e.radius))
+        tex = game.tex_enemy.get(ri) or game.tex_enemy.get(12)
+        if tex:
+            surf.blit(tex, tex.get_rect(center=(sx, sy)))
         else:
-            col = (140, 80, 200)
-        pygame.draw.circle(surf, col, (sx, sy), int(e.radius))
+            if e.kind == "grunt":
+                col = (200, 90, 90)
+            elif e.kind == "runner":
+                col = (230, 160, 80)
+            else:
+                col = (140, 80, 200)
+            pygame.draw.circle(surf, col, (sx, sy), sr(e.radius))
         ratio = max(0, e.hp / e.max_hp)
-        bw = int(e.radius * 2.2)
-        by = sy - int(e.radius) - 8
-        pygame.draw.rect(surf, (40, 40, 50), (sx - bw // 2, by, bw, 4))
-        pygame.draw.rect(surf, config.DANGER, (sx - bw // 2, by, int(bw * ratio), 4))
+        bw = int(e.radius * 2.2 * s)
+        by = sy - sr(e.radius) - int(8 * s)
+        pygame.draw.rect(surf, (40, 40, 50), (sx - bw // 2, by, bw, max(1, int(4 * s))))
+        pygame.draw.rect(surf, config.DANGER, (sx - bw // 2, by, int(bw * ratio), max(1, int(4 * s))))
 
-    for bx, by, br in game.orbit.blade_positions(p.x, p.y):
+    for bx, by, br, bang in game.orbit.blade_positions(p.x, p.y):
         sbx, sby = to_screen(bx, by, icx, icy)
-        pygame.draw.circle(surf, config.ACCENT, (sbx, sby), int(br))
+        if game.tex_sword:
+            blit_rot_center(surf, game.tex_sword, (sbx, sby), bang)
+        else:
+            pygame.draw.circle(surf, config.ACCENT, (sbx, sby), sr(br))
 
     for pr in game.projectiles:
         sx, sy = to_screen(pr.x, pr.y, icx, icy)
-        pygame.draw.circle(surf, (255, 200, 80), (sx, sy), int(pr.radius))
+        if game.tex_bullet:
+            ang = math.atan2(pr.vy, pr.vx)
+            deg = -math.degrees(ang)
+            rot = pygame.transform.rotate(game.tex_bullet, deg)
+            surf.blit(rot, rot.get_rect(center=(sx, sy)))
+        else:
+            pygame.draw.circle(surf, (255, 200, 80), (sx, sy), sr(pr.radius))
 
     flash = p.iframes > 0 and (pygame.time.get_ticks() // 100) % 2 == 0
-    col = (220, 230, 255) if not flash else (255, 255, 200)
     psx, psy = to_screen(p.x, p.y, icx, icy)
-    pygame.draw.circle(surf, col, (psx, psy), int(p.radius))
-    pygame.draw.circle(surf, config.ACCENT, (psx, psy), int(p.radius), 2)
+    if game.tex_knight:
+        if flash:
+            pygame.draw.circle(surf, (255, 255, 200), (psx, psy), sr(p.radius) + 2)
+        surf.blit(game.tex_knight, game.tex_knight.get_rect(center=(psx, psy)))
+    else:
+        col = (220, 230, 255) if not flash else (255, 255, 200)
+        pygame.draw.circle(surf, col, (psx, psy), sr(p.radius))
+        pygame.draw.circle(surf, config.ACCENT, (psx, psy), sr(p.radius), max(1, int(2 * s)))
 
     font, fs = game.font, game.font_small
-    surf.blit(font.render(f"时间 {game.time:.0f}s  |  Lv.{p.level}", True, config.TEXT), (12, 8))
+    sw, sh = config.SCREEN_W, config.SCREEN_H
+    edge_x = max(56, int(52 * sw / 960))
+    edge_y = max(44, int(40 * sh / 540))
+    bar_w = int(220 * sw / 960)
+    bar_h = max(8, int(10 * sh / 540))
+    hp_w = int(200 * sw / 960)
+    gap = max(8, int(10 * sh / 540))
+    line = font.render(f"Time {game.time:.0f}s  |  Lv.{p.level}", True, config.TEXT)
     need = config.xp_for_next_level(p.level)
-    br = pygame.Rect(12, 36, 220, 10)
-    pygame.draw.rect(surf, config.UI_BG, br, border_radius=3)
+    lbl_xp = fs.render(f"Experience {p.xp_into_level}/{need}", True, config.TEXT)
+    hp_h = max(8, int(12 * sh / 540))
+    lbl_hp = fs.render(f"Health {int(p.hp)}/{int(p.max_hp)}", True, config.TEXT)
+    surf.blit(line, (edge_x, edge_y))
+    y = edge_y + line.get_height() + gap
+    br = pygame.Rect(edge_x, y, bar_w, bar_h)
+    pygame.draw.rect(surf, config.UI_BG, br)
     fill = int(br.w * min(1.0, p.xp_into_level / max(1, need)))
-    pygame.draw.rect(surf, config.ACCENT, (br.x, br.y, fill, br.h), border_radius=3)
-    surf.blit(fs.render(f"经验 {p.xp_into_level}/{need}", True, config.TEXT), (12, 50))
-    hp_w = 200
-    pygame.draw.rect(surf, config.UI_BG, (12, 70, hp_w, 12), border_radius=3)
-    pygame.draw.rect(surf, (80, 200, 120), (12, 70, int(hp_w * max(0, p.hp / p.max_hp)), 12), border_radius=3)
-    surf.blit(fs.render(f"生命 {int(p.hp)}/{int(p.max_hp)}", True, config.TEXT), (12, 86))
-    surf.blit(
-        fs.render("WASD 移动 | ESC 暂停 | 升级 1/2/3 + Enter", True, (150, 155, 175)),
-        (12, config.SCREEN_H - 26),
+    pygame.draw.rect(surf, config.ACCENT, (br.x, br.y, fill, br.h))
+    y = br.bottom + 4
+    surf.blit(lbl_xp, (edge_x, y))
+    y += lbl_xp.get_height() + gap
+    pygame.draw.rect(surf, config.UI_BG, (edge_x, y, hp_w, hp_h))
+    pygame.draw.rect(
+        surf,
+        (80, 200, 120),
+        (edge_x, y, int(hp_w * max(0, p.hp / p.max_hp)), hp_h),
     )
+    y += hp_h + 4
+    surf.blit(lbl_hp, (edge_x, y))
 
+    hint = fs.render("WASD Move | ESC Pause | Upgrade 1/2/3 + Enter", True, (150, 155, 175))
+    surf.blit(hint, (edge_x, sh - hint.get_height() - edge_y))
+
+    off = max(18, int(24 * sh / 540))
+    cx, cyy = sw // 2, sh // 2
     if game.state == "game_over":
-        ov = pygame.Surface((config.SCREEN_W, config.SCREEN_H), pygame.SRCALPHA)
+        ov = pygame.Surface((sw, sh), pygame.SRCALPHA)
         ov.fill((0, 0, 0, 170))
         surf.blit(ov, (0, 0))
-        t = game.font_big.render("游戏结束", True, config.DANGER)
-        surf.blit(t, t.get_rect(center=(config.SCREEN_W // 2, config.SCREEN_H // 2 - 20)))
-        t2 = font.render(f"存活 {game.time:.1f} 秒 — R 重开", True, config.TEXT)
-        surf.blit(t2, t2.get_rect(center=(config.SCREEN_W // 2, config.SCREEN_H // 2 + 20)))
+        t = game.font_big.render("Game Over", True, config.DANGER)
+        surf.blit(t, t.get_rect(center=(cx, cyy - off)))
+        t2 = font.render(f"Survival {game.time:.1f} seconds — R Restart", True, config.TEXT)
+        surf.blit(t2, t2.get_rect(center=(cx, cyy + off)))
 
     if game.state == "paused":
-        ov = pygame.Surface((config.SCREEN_W, config.SCREEN_H), pygame.SRCALPHA)
+        ov = pygame.Surface((sw, sh), pygame.SRCALPHA)
         ov.fill((0, 0, 0, 120))
         surf.blit(ov, (0, 0))
-        t = game.font_big.render("已暂停", True, config.TEXT)
-        surf.blit(t, t.get_rect(center=(config.SCREEN_W // 2, config.SCREEN_H // 2)))
-        t2 = font.render("再按 ESC 继续", True, config.TEXT)
-        surf.blit(t2, t2.get_rect(center=(config.SCREEN_W // 2, config.SCREEN_H // 2 + 40)))
+        t = game.font_big.render("Paused", True, config.TEXT)
+        surf.blit(t, t.get_rect(center=(cx, cyy)))
+        t2 = font.render("Press ESC to continue", True, config.TEXT)
+        surf.blit(t2, t2.get_rect(center=(cx, cyy + off * 2)))
 
     if game.state == "level_up":
-        ov = pygame.Surface((config.SCREEN_W, config.SCREEN_H), pygame.SRCALPHA)
+        ov = pygame.Surface((sw, sh), pygame.SRCALPHA)
         ov.fill((10, 8, 20, 210))
         surf.blit(ov, (0, 0))
-        t = game.font_big.render("升级 — 选一项", True, config.ACCENT)
-        surf.blit(t, t.get_rect(center=(config.SCREEN_W // 2, 80)))
-        y = 160
+        t = game.font_big.render("Upgrade — Choose one", True, config.ACCENT)
+        surf.blit(t, t.get_rect(center=(cx, int(sh * 0.12))))
+        y = int(sh * 0.28)
+        row_gap = max(56, int(72 * sh / 540))
         for idx, key in enumerate(game.upgrade_choices):
             meta = next((u for u in UPGRADES if u[0] == key), (key, key, ""))
             name, desc = meta[1], meta[2]
             c = (255, 240, 200) if idx == game.pick_i else config.TEXT
             pre = ">" if idx == game.pick_i else " "
-            surf.blit(font.render(f"{pre} {idx + 1}. {name}", True, c), (config.SCREEN_W // 2 - 200, y))
-            surf.blit(fs.render(desc, True, (160, 165, 190)), (config.SCREEN_W // 2 - 180, y + 28))
-            y += 72
+            line1 = font.render(f"{pre} {idx + 1}. {name}", True, c)
+            r1 = line1.get_rect(midtop=(cx, y))
+            surf.blit(line1, r1)
+            line2 = fs.render(desc, True, (160, 165, 190))
+            r2 = line2.get_rect(midtop=(cx, r1.bottom + 6))
+            surf.blit(line2, r2)
+            y = r2.bottom + row_gap
 
 
 def run():
@@ -537,6 +661,10 @@ def run():
         try:
             g.handle_input(events)
         except SystemExit:
+            try:
+                pygame.mixer.music.stop()
+            except Exception:
+                pass
             pygame.quit()
             return
         g.update(dt)
