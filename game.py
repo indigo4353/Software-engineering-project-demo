@@ -1,15 +1,10 @@
-"""
-This file contains the main game logic and the game objects.
-"""
+# Main game logic and objects.
 import math
 import random
 from pathlib import Path
 
 import pygame
-
 import config
-
-
 
 
 def dist(ax, ay, bx, by):
@@ -33,12 +28,10 @@ def to_screen(wx, wy, cam_x, cam_y):
 
 
 def sr(r):
-    """World radius/length to screen pixels (scaled by DISPLAY_SCALE)."""
     return max(1, int(r * config.DISPLAY_SCALE))
 
 
-def _load_scaled_png(folder: Path, name: str, size_px: int):
-    """Load the png file from the images folder and scale it to the square side length size_px; return None if failed."""
+def load_tex(folder, name, size_px):
     path = folder / name
     if not path.is_file():
         return None
@@ -57,11 +50,13 @@ def blit_rot_center(dst, image, center_xy, angle_rad, tangent_offset=0.0):
         return
     deg = -math.degrees(angle_rad + math.pi / 2 + tangent_offset)
     rot = pygame.transform.rotate(image, deg)
-    r = rot.get_rect(center=center_xy)
-    dst.blit(rot, r)
+    dst.blit(rot, rot.get_rect(center=center_xy))
 
 
-# ---------- Game Objects ----------
+def overlay(surf, w, h, rgba):
+    o = pygame.Surface((w, h), pygame.SRCALPHA)
+    o.fill(rgba)
+    surf.blit(o, (0, 0))
 
 
 class Player:
@@ -123,6 +118,9 @@ class Player:
         return gained
 
 
+ENEMY_COLOR = {"grunt": (200, 90, 90), "runner": (230, 160, 80), "brute": (140, 80, 200)}
+
+
 class Enemy:
     def __init__(self, x, y, kind, hp, speed, radius, damage):
         self.x = x
@@ -147,8 +145,6 @@ class Enemy:
         self.hp -= dmg
         if self.hp <= 0:
             self.alive = False
-            return True
-        return False
 
 
 def spawn_enemy(px, py, wave):
@@ -209,19 +205,21 @@ class OrbitBlades:
 
     def update(self, dt):
         self.angle += config.ORBIT_SPEED * (1 + 0.03 * (self.level - 1)) * dt
-        for k in list(self.hit_cd.keys()):
+        for k in list(self.hit_cd):
             self.hit_cd[k] -= dt
             if self.hit_cd[k] <= 0:
                 del self.hit_cd[k]
 
     def blade_positions(self, px, py):
-        out = []
-        for i in range(self.count):
-            a = self.angle + (2 * math.pi * i) / max(1, self.count)
-            bx = px + math.cos(a) * config.ORBIT_RADIUS
-            by = py + math.sin(a) * config.ORBIT_RADIUS
-            out.append((bx, by, 10.0, a))
-        return out
+        n = max(1, self.count)
+        r = config.ORBIT_RADIUS
+        return [
+            (px + math.cos(self.angle + 2 * math.pi * i / n) * r,
+             py + math.sin(self.angle + 2 * math.pi * i / n) * r,
+             10.0,
+             self.angle + 2 * math.pi * i / n)
+            for i in range(self.count)
+        ]
 
 
 class HomingMissiles:
@@ -245,9 +243,7 @@ class HomingMissiles:
         t = min(living, key=lambda e: (e.x - px) ** 2 + (e.y - py) ** 2)
         dx, dy = t.x - px, t.y - py
         d = math.hypot(dx, dy) or 1
-        dx, dy = dx / d, dy / d
-        dx += random.uniform(-0.08, 0.08)
-        dy += random.uniform(-0.08, 0.08)
+        dx, dy = dx / d + random.uniform(-0.08, 0.08), dy / d + random.uniform(-0.08, 0.08)
         self.cooldown = max(0.35, config.PROJECTILE_COOLDOWN - 0.04 * (self.level - 1))
         spd = config.PROJECTILE_SPEED * (1 + 0.02 * (self.level - 1))
         return Projectile(px, py, dx * spd, dy * spd, self.bolt_damage())
@@ -262,6 +258,7 @@ UPGRADES = [
     ("missile", "Homing Bullet", "Automatically fire at the nearest enemy"),
     ("missile_lv", "Homing Bullet +1 Level", "Homing bullet stronger and faster"),
 ]
+UPGRADE_META = {u[0]: u for u in UPGRADES}
 
 
 def update_projectiles(projectiles, enemies, dt):
@@ -277,9 +274,6 @@ def update_projectiles(projectiles, enemies, dt):
                 break
 
 
-# ---------- Main Logic ----------
-
-
 class Game:
     def __init__(self):
         pygame.init()
@@ -291,39 +285,66 @@ class Game:
         self.font_big = config.get_font(32)
         self.font_small = config.get_font(15)
         self.world_map = self._make_map()
-        img_dir = Path(__file__).resolve().parent / "images"
-        ds = config.DISPLAY_SCALE
-        self.tex_knight = _load_scaled_png(
-            img_dir, "knight.png", max(8, int(2 * config.PLAYER_RADIUS * ds))
+        root_dir = Path(__file__).resolve().parent
+        image_dir = root_dir / "images"
+        scale = config.DISPLAY_SCALE
+        self.tex_knight = load_tex(
+            image_dir,
+            "knight.png",
+            max(8, int(2 * config.PLAYER_RADIUS * scale)),
         )
-        self.tex_sword = _load_scaled_png(
-            img_dir, "sword.png", max(12, int(2 * 10 * ds))
-        )
-        self.tex_enemy = {}
-        for rad in (9, 12, 18):
-            self.tex_enemy[rad] = _load_scaled_png(
-                img_dir, "enemy.png", max(8, int(2 * rad * ds))
-            )
-        self.tex_bullet = _load_scaled_png(
-            img_dir,
+        self.tex_sword = load_tex(image_dir, "sword.png", max(12, int(20 * scale)))
+        self.tex_enemy = {
+            "grunt": load_tex(image_dir, "enemy.png", max(8, int(2 * 12 * scale))),
+            "runner": load_tex(image_dir, "enemy2.png", max(8, int(2 * 9 * scale))),
+            "brute": load_tex(image_dir, "enemy3.png", max(8, int(2 * 18 * scale))),
+        }
+        self.tex_bullet = load_tex(
+            image_dir,
             "bullet.png",
-            max(8, int(2 * config.PROJECTILE_RADIUS * ds)),
+            max(8, int(2 * config.PROJECTILE_RADIUS * scale)),
         )
+        self.volume = 0.45
         self._start_bgm()
-        self.reset()
+        self.reset(start_in_menu=True)
 
     def _start_bgm(self):
-        path = Path(__file__).resolve().parent / "music" / "music.mp3"
-        if not path.is_file():
+        p = Path(__file__).resolve().parent / "music" / "music.mp3"
+        if not p.is_file():
             return
         try:
-            pygame.mixer.music.load(str(path))
-            pygame.mixer.music.set_volume(0.45)
+            pygame.mixer.music.load(str(p))
+            pygame.mixer.music.set_volume(self.volume)
             pygame.mixer.music.play(-1)
         except pygame.error:
             pass
 
+    def _set_volume(self, value):
+        self.volume = max(0.0, min(1.0, value))
+        try:
+            pygame.mixer.music.set_volume(self.volume)
+        except pygame.error:
+            pass
+
+    def _enemy_tex(self, enemy):
+        tex = self.tex_enemy.get(enemy.kind)
+        if tex:
+            return tex
+        return self.tex_enemy.get("grunt")
+
+    def _menu_buttons(self):
+        sw, sh = config.SCREEN_W, config.SCREEN_H
+        bw = int(sw * 0.24)
+        bh = max(44, int(sh * 0.08))
+        cx = sw // 2
+        y0 = int(sh * 0.42)
+        gap = max(16, int(sh * 0.03))
+        start_rect = pygame.Rect(cx - bw // 2, y0, bw, bh)
+        quit_rect = pygame.Rect(cx - bw // 2, y0 + bh + gap, bw, bh)
+        return start_rect, quit_rect
+
     def _make_map(self):
+        sc = config.DISPLAY_SCALE
         map_path = Path(__file__).resolve().parent / "images" / "map.png"
         tw, th = config.WORLD_W, config.WORLD_H
         if map_path.is_file():
@@ -331,7 +352,6 @@ class Game:
                 img = pygame.image.load(str(map_path)).convert()
                 if img.get_size() != (tw, th):
                     img = pygame.transform.scale(img, (tw, th))
-                sc = config.DISPLAY_SCALE
                 if sc != 1.0:
                     img = pygame.transform.scale(img, (int(tw * sc), int(th * sc)))
                 return img
@@ -339,13 +359,11 @@ class Game:
                 pass
         s = pygame.Surface((tw, th))
         ts = config.TILE_SIZE
-        nx = (tw + ts - 1) // ts
-        ny = (th + ts - 1) // ts
+        nx, ny = (tw + ts - 1) // ts, (th + ts - 1) // ts
         for ty in range(ny):
             for tx in range(nx):
                 wx, wy = tx * ts, ty * ts
-                w = min(ts, tw - wx)
-                h = min(ts, th - wy)
+                w, h = min(ts, tw - wx), min(ts, th - wy)
                 if w <= 0 or h <= 0:
                     continue
                 c = config.TILE_COLOR_A if (tx + ty) % 2 == 0 else config.TILE_COLOR_B
@@ -356,12 +374,11 @@ class Game:
         for ty in range(0, ny + 1, 4):
             y = min(ty * ts, th)
             pygame.draw.line(s, config.TILE_GRID_LINE, (0, y), (tw, y))
-        sc = config.DISPLAY_SCALE
         if sc != 1.0:
             s = pygame.transform.scale(s, (int(tw * sc), int(th * sc)))
         return s
 
-    def reset(self):
+    def reset(self, start_in_menu=False):
         cx, cy = config.WORLD_W // 2, config.WORLD_H // 2
         self.player = Player(cx, cy)
         self.enemies = []
@@ -373,7 +390,7 @@ class Game:
         self.spawn_timer = 0.0
         self.spawn_interval = config.SPAWN_START_INTERVAL
         self.batch = config.BATCH_SIZE_START
-        self.state = "playing"
+        self.state = "menu" if start_in_menu else "playing"
         self.level_queue = 0
         self.upgrade_choices = []
         self.pick_i = 0
@@ -399,11 +416,8 @@ class Game:
             self.enemies.remove(e)
 
     def _roll_upgrades(self):
-        pool = [u[0] for u in UPGRADES]
-        if self.missiles is None:
-            pool = [p for p in pool if p != "missile_lv"]
-        else:
-            pool = [p for p in pool if p != "missile"]
+        skip = "missile_lv" if self.missiles is None else "missile"
+        pool = [u[0] for u in UPGRADES if u[0] != skip]
         self.upgrade_choices = random.sample(pool, min(3, len(pool)))
         self.pick_i = 0
 
@@ -430,14 +444,33 @@ class Game:
         for ev in events:
             if ev.type == pygame.QUIT:
                 raise SystemExit
+            if self.state == "menu":
+                if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                    start_rect, quit_rect = self._menu_buttons()
+                    if start_rect.collidepoint(ev.pos):
+                        self.state = "playing"
+                    elif quit_rect.collidepoint(ev.pos):
+                        raise SystemExit
+                    return
+                if ev.type == pygame.KEYDOWN:
+                    if ev.key in (pygame.K_RETURN, pygame.K_SPACE):
+                        self.state = "playing"
+                    elif ev.key == pygame.K_ESCAPE:
+                        raise SystemExit
+                return
             if self.state == "game_over" and ev.type == pygame.KEYDOWN and ev.key == pygame.K_r:
                 self.reset()
                 return
             if self.state == "playing" and ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
                 self.state = "paused"
                 return
-            if self.state == "paused" and ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
-                self.state = "playing"
+            if self.state == "paused" and ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    self.state = "playing"
+                elif ev.key in (pygame.K_LEFT, pygame.K_a, pygame.K_MINUS):
+                    self._set_volume(self.volume - 0.05)
+                elif ev.key in (pygame.K_RIGHT, pygame.K_d, pygame.K_EQUALS):
+                    self._set_volume(self.volume + 0.05)
                 return
             if self.state == "level_up" and ev.type == pygame.KEYDOWN:
                 if ev.key in (pygame.K_1, pygame.K_a):
@@ -457,7 +490,7 @@ class Game:
                 return
 
     def update(self, dt):
-        if self.state in ("game_over", "level_up", "paused"):
+        if self.state in ("menu", "game_over", "level_up", "paused"):
             return
         keys = pygame.key.get_pressed()
         self.time += dt
@@ -485,7 +518,7 @@ class Game:
             if self.orbit.hit_cd.get(eid, 0) > 0:
                 continue
             dmg = self.orbit.blade_damage() * p.damage_mult
-            for bx, by, br, _ang in self.orbit.blade_positions(p.x, p.y):
+            for bx, by, br, _ in self.orbit.blade_positions(p.x, p.y):
                 if circles_hit(bx, by, br, e.x, e.y, e.radius):
                     self.orbit.hit_cd[eid] = config.ORBIT_HIT_COOLDOWN
                     e.hit(dmg)
@@ -519,7 +552,6 @@ class Game:
 
 def draw(game):
     surf = game.screen
-    surf.fill(config.BG)
     p = game.player
     icx, icy = camera_xy(p.x, p.y)
     s = config.DISPLAY_SCALE
@@ -531,18 +563,11 @@ def draw(game):
 
     for e in game.enemies:
         sx, sy = to_screen(e.x, e.y, icx, icy)
-        ri = int(round(e.radius))
-        tex = game.tex_enemy.get(ri) or game.tex_enemy.get(12)
+        tex = game._enemy_tex(e)
         if tex:
             surf.blit(tex, tex.get_rect(center=(sx, sy)))
         else:
-            if e.kind == "grunt":
-                col = (200, 90, 90)
-            elif e.kind == "runner":
-                col = (230, 160, 80)
-            else:
-                col = (140, 80, 200)
-            pygame.draw.circle(surf, col, (sx, sy), sr(e.radius))
+            pygame.draw.circle(surf, ENEMY_COLOR.get(e.kind, (140, 80, 200)), (sx, sy), sr(e.radius))
         ratio = max(0, e.hp / e.max_hp)
         bw = int(e.radius * 2.2 * s)
         by = sy - sr(e.radius) - int(8 * s)
@@ -559,9 +584,7 @@ def draw(game):
     for pr in game.projectiles:
         sx, sy = to_screen(pr.x, pr.y, icx, icy)
         if game.tex_bullet:
-            ang = math.atan2(pr.vy, pr.vx)
-            deg = -math.degrees(ang)
-            rot = pygame.transform.rotate(game.tex_bullet, deg)
+            rot = pygame.transform.rotate(game.tex_bullet, -math.degrees(math.atan2(pr.vy, pr.vx)))
             surf.blit(rot, rot.get_rect(center=(sx, sy)))
         else:
             pygame.draw.circle(surf, (255, 200, 80), (sx, sy), sr(pr.radius))
@@ -600,11 +623,7 @@ def draw(game):
     surf.blit(lbl_xp, (edge_x, y))
     y += lbl_xp.get_height() + gap
     pygame.draw.rect(surf, config.UI_BG, (edge_x, y, hp_w, hp_h))
-    pygame.draw.rect(
-        surf,
-        (80, 200, 120),
-        (edge_x, y, int(hp_w * max(0, p.hp / p.max_hp)), hp_h),
-    )
+    pygame.draw.rect(surf, (80, 200, 120), (edge_x, y, int(hp_w * max(0, p.hp / p.max_hp)), hp_h))
     y += hp_h + 4
     surf.blit(lbl_hp, (edge_x, y))
 
@@ -613,34 +632,57 @@ def draw(game):
 
     off = max(18, int(24 * sh / 540))
     cx, cyy = sw // 2, sh // 2
+    if game.state == "menu":
+        overlay(surf, sw, sh, (0, 0, 0, 170))
+        t = game.font_big.render("Demo - Survival", True, config.ACCENT)
+        surf.blit(t, t.get_rect(center=(cx, int(sh * 0.28))))
+        start_rect, quit_rect = game._menu_buttons()
+        mouse_pos = pygame.mouse.get_pos()
+        start_hover = start_rect.collidepoint(mouse_pos)
+        quit_hover = quit_rect.collidepoint(mouse_pos)
+        start_bg = (110, 90, 190) if start_hover else config.UI_BG
+        quit_bg = (130, 70, 70) if quit_hover else config.UI_BG
+        pygame.draw.rect(surf, start_bg, start_rect, border_radius=8)
+        pygame.draw.rect(surf, config.ACCENT, start_rect, width=2, border_radius=8)
+        pygame.draw.rect(surf, quit_bg, quit_rect, border_radius=8)
+        pygame.draw.rect(surf, config.DANGER, quit_rect, width=2, border_radius=8)
+        start_txt = game.font.render("Start Game", True, config.TEXT)
+        quit_txt = game.font.render("Quit", True, config.TEXT)
+        surf.blit(start_txt, start_txt.get_rect(center=start_rect.center))
+        surf.blit(quit_txt, quit_txt.get_rect(center=quit_rect.center))
+        t3 = fs.render("WASD Move | ESC Pause | Upgrade 1/2/3 + Enter", True, config.TEXT)
+        surf.blit(t3, t3.get_rect(center=(cx, quit_rect.bottom + int(sh * 0.08))))
+
     if game.state == "game_over":
-        ov = pygame.Surface((sw, sh), pygame.SRCALPHA)
-        ov.fill((0, 0, 0, 170))
-        surf.blit(ov, (0, 0))
+        overlay(surf, sw, sh, (0, 0, 0, 170))
         t = game.font_big.render("Game Over", True, config.DANGER)
         surf.blit(t, t.get_rect(center=(cx, cyy - off)))
         t2 = font.render(f"Survival {game.time:.1f} seconds — R Restart", True, config.TEXT)
         surf.blit(t2, t2.get_rect(center=(cx, cyy + off)))
 
     if game.state == "paused":
-        ov = pygame.Surface((sw, sh), pygame.SRCALPHA)
-        ov.fill((0, 0, 0, 120))
-        surf.blit(ov, (0, 0))
+        overlay(surf, sw, sh, (0, 0, 0, 120))
         t = game.font_big.render("Paused", True, config.TEXT)
-        surf.blit(t, t.get_rect(center=(cx, cyy)))
-        t2 = font.render("Press ESC to continue", True, config.TEXT)
-        surf.blit(t2, t2.get_rect(center=(cx, cyy + off * 2)))
+        surf.blit(t, t.get_rect(center=(cx, cyy - off)))
+        t2 = font.render("ESC: Continue  |  Left/Right (A/D): Volume", True, config.TEXT)
+        surf.blit(t2, t2.get_rect(center=(cx, cyy + off)))
+        vw = int(sw * 0.32)
+        vh = max(12, int(sh * 0.02))
+        vx = cx - vw // 2
+        vy = cyy + off * 2
+        pygame.draw.rect(surf, config.UI_BG, (vx, vy, vw, vh))
+        pygame.draw.rect(surf, config.ACCENT, (vx, vy, int(vw * game.volume), vh))
+        lbl = fs.render(f"Volume: {int(game.volume * 100)}%", True, config.TEXT)
+        surf.blit(lbl, lbl.get_rect(center=(cx, vy + vh + 20)))
 
     if game.state == "level_up":
-        ov = pygame.Surface((sw, sh), pygame.SRCALPHA)
-        ov.fill((10, 8, 20, 210))
-        surf.blit(ov, (0, 0))
+        overlay(surf, sw, sh, (10, 8, 20, 210))
         t = game.font_big.render("Upgrade — Choose one", True, config.ACCENT)
         surf.blit(t, t.get_rect(center=(cx, int(sh * 0.12))))
         y = int(sh * 0.28)
         row_gap = max(56, int(72 * sh / 540))
         for idx, key in enumerate(game.upgrade_choices):
-            meta = next((u for u in UPGRADES if u[0] == key), (key, key, ""))
+            meta = UPGRADE_META.get(key, (key, key, ""))
             name, desc = meta[1], meta[2]
             c = (255, 240, 200) if idx == game.pick_i else config.TEXT
             pre = ">" if idx == game.pick_i else " "
