@@ -1,7 +1,27 @@
-# how to run:
-    save files then type:
-        1.cd c:\Users\16002\Desktop\demo
-        2.python -m pip install -r requirements.txt
-        3.python main.py
-    in cmd to run
-pygame>=2.5.0
+# How To Run the Game
+
+1) Open CMD / PowerShell / Git Bash
+2) Go to the project folder (the folder that contains main.py):
+   cd <your-project-folder>
+
+   Example:
+   cd Desktop/demo
+   or
+   cd C:\path\to\your\project
+
+3) Install dependencies (first time only):
+   python -m pip install -r requirements.txt
+
+4) Start the game:
+   python main.py
+
+(Optional)
+You can also run:
+   python game.py
+
+Notes:
+- Run all commands in the same folder as main.py, game.py, and config.py.
+- If pygame is missing, install it with:
+  python -m pip install pygame
+- If `python` does not work on your system, try:
+  py main.py
