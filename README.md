@@ -3,6 +3,10 @@
 
 ## Graphical Abstract
 
+![Graphical Abstract](/gamephoto/1.png)
+![Graphical Abstract](/gamephoto/2.png)
+![Graphical Abstract](/gamephoto/3.png)
+
 ---
 
 ## Purpose of the Software
